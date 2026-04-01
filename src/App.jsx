@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import WebApp from "@twa-dev/sdk";
 import { sbFetch } from "./supabase.js";
 import UniversityList from "./components/UniversityList.jsx";
 import Favorites from "./components/Favorites.jsx";
@@ -31,6 +32,31 @@ const C = {
   t3: "#8896a6",
   white: "#ffffff",
 };
+
+function getAppsStorageKey(telegramId) {
+  return `uniktap_apps_${telegramId}`;
+}
+
+function readApplicationsFromStorage(telegramId) {
+  if (!telegramId) return [];
+  try {
+    const raw = localStorage.getItem(getAppsStorageKey(telegramId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeApplicationsToStorage(telegramId, applications) {
+  if (!telegramId) return;
+  try {
+    localStorage.setItem(getAppsStorageKey(telegramId), JSON.stringify(applications));
+  } catch {
+    // ignore storage errors
+  }
+}
 
 // ─── Components ───
 
@@ -359,10 +385,24 @@ function FacultyScreen({ faculty, uni, onBack, onApply }) {
   );
 }
 
-function ApplyFormScreen({ faculty, uni, specs, onBack, onSubmit }) {
+function ApplyFormScreen({
+  faculty,
+  uni,
+  specs,
+  onBack,
+  onSubmit,
+  telegramId,
+  initialPhone,
+  initialFirstName,
+  initialLastName,
+}) {
   const [form, setForm] = useState({
-    last_name: "", first_name: "", middle_name: "",
-    birth_date: "", phone: "", email: "",
+    last_name: initialLastName || "",
+    first_name: initialFirstName || "",
+    middle_name: "",
+    birth_date: "",
+    phone: initialPhone || "",
+    email: "",
     specialty_id: specs[0]?.id || "",
   });
   const [errors, setErrors] = useState({});
@@ -377,32 +417,65 @@ function ApplyFormScreen({ faculty, uni, specs, onBack, onSubmit }) {
     return e;
   };
 
+  useEffect(() => {
+    setForm((prev) => ({
+      ...prev,
+      first_name: prev.first_name || initialFirstName || "",
+      last_name: prev.last_name || initialLastName || "",
+      phone: prev.phone || initialPhone || "",
+    }));
+  }, [initialFirstName, initialLastName, initialPhone]);
+
   const handleSubmit = async () => {
     const e = validate();
     if (Object.keys(e).length > 0) { setErrors(e); return; }
     setSubmitting(true);
     try {
-      await sbFetch("applications", {
-        method: "POST",
-        body: JSON.stringify({
-          university_id: uni.id,
-          faculty_id: faculty.id,
-          specialty_id: form.specialty_id || null,
-          last_name: form.last_name,
-          first_name: form.first_name,
-          middle_name: form.middle_name || null,
-          birth_date: form.birth_date,
-          phone: form.phone,
-          email: form.email || null,
-        }),
-        prefer: "return=minimal",
-      });
+      const payload = {
+        university_id: uni.id,
+        faculty_id: faculty.id,
+        specialty_id: form.specialty_id || null,
+        last_name: form.last_name,
+        first_name: form.first_name,
+        middle_name: form.middle_name || null,
+        birth_date: form.birth_date,
+        phone: form.phone,
+        email: form.email || null,
+      };
+      if (telegramId) payload.telegram_id = telegramId;
+
+      try {
+        await sbFetch("applications", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          prefer: "return=minimal",
+        });
+      } catch (createErr) {
+        if (payload.telegram_id) {
+          const fallbackPayload = { ...payload };
+          delete fallbackPayload.telegram_id;
+          await sbFetch("applications", {
+            method: "POST",
+            body: JSON.stringify(fallbackPayload),
+            prefer: "return=minimal",
+          });
+        } else {
+          throw createErr;
+        }
+      }
+
       const specName = specs.find(s => s.id == form.specialty_id)?.name || "";
       onSubmit({
+        telegram_id: telegramId || null,
+        first_name: form.first_name,
+        last_name: form.last_name,
+        phone: form.phone,
+        email: form.email || null,
         university: uni.short_name,
         faculty: faculty.name,
         specialty: specName,
         date: new Date().toLocaleDateString("ru-RU"),
+        status: "pending",
       });
     } catch (e) {
       alert("Ошибка отправки: " + e.message);
@@ -605,16 +678,47 @@ function TelegramNotif({ app, onClose }) {
   );
 }
 
-function ProfileScreen() {
+function ProfileScreen({ profile, applications, onRequestContact, requestingContact, tgAvailable }) {
+  const fullName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || "Пользователь Telegram";
   return (
     <div style={{ paddingBottom: 80 }}>
-      <div style={{ padding: "20px 16px", textAlign: "center" }}>
+      <div style={{ padding: "20px 16px" }}>
         <div style={{
           width: 80, height: 80, borderRadius: "50%", background: C.bluePale,
           margin: "20px auto 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34,
         }}>👤</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.t1 }}>Профиль</div>
-        <div style={{ fontSize: 13, color: C.t3, marginTop: 6 }}>Скоро здесь появится личный кабинет</div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.t1, textAlign: "center" }}>{fullName}</div>
+        <div style={{ fontSize: 13, color: C.t3, marginTop: 6, textAlign: "center" }}>
+          {profile?.username ? `@${profile.username}` : "Username не указан"}
+        </div>
+        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginTop: 16 }}>
+          <div style={{ fontSize: 13, color: C.t2 }}>Telegram ID: <strong>{profile?.telegram_id || "—"}</strong></div>
+          <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Телефон: <strong>{profile?.phone || "Не указан"}</strong></div>
+          <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Мои заявки: <strong>{applications.length}</strong></div>
+        </div>
+        <button
+          onClick={onRequestContact}
+          disabled={requestingContact || !tgAvailable}
+          style={{
+            width: "100%",
+            marginTop: 14,
+            padding: "12px 14px",
+            border: "none",
+            borderRadius: 12,
+            cursor: requestingContact || !tgAvailable ? "not-allowed" : "pointer",
+            background: requestingContact || !tgAvailable ? C.border : `linear-gradient(135deg, ${C.blue}, ${C.accent})`,
+            color: requestingContact || !tgAvailable ? C.t3 : C.white,
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          {requestingContact ? "Запрашиваем номер..." : "📱 Поделиться номером"}
+        </button>
+        {!tgAvailable && (
+          <div style={{ marginTop: 8, fontSize: 12, color: C.t3, textAlign: "center" }}>
+            Кнопка доступна только внутри Telegram Web App
+          </div>
+        )}
       </div>
     </div>
   );
@@ -630,7 +734,32 @@ export default function App() {
   const [unis, setUnis] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingUnis, setLoadingUnis] = useState(true);
+  const [profile, setProfile] = useState(null);
+  const [requestingContact, setRequestingContact] = useState(false);
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
+  const tgAvailable = typeof window !== "undefined" && !!window.Telegram?.WebApp;
+
+  const upsertProfile = async (payload) => {
+    const existing = await sbFetch(`profiles?telegram_id=eq.${payload.telegram_id}&select=*`);
+    if (existing?.length > 0) {
+      await sbFetch(`profiles?telegram_id=eq.${payload.telegram_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...payload,
+          updated_at: new Date().toISOString(),
+        }),
+        prefer: "return=minimal",
+      });
+      return { ...existing[0], ...payload };
+    }
+
+    const created = await sbFetch("profiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      prefer: "return=representation",
+    });
+    return Array.isArray(created) ? created[0] : payload;
+  };
 
   useEffect(() => {
     (async () => {
@@ -643,6 +772,66 @@ export default function App() {
       setLoadingUnis(false);
     })();
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (!tgAvailable) return;
+      try {
+        WebApp.ready();
+        WebApp.expand();
+        const user = WebApp.initDataUnsafe?.user;
+        if (!user?.id) return;
+        const savedProfile = await upsertProfile({
+          telegram_id: user.id,
+          first_name: user.first_name || null,
+          last_name: user.last_name || null,
+          username: user.username || null,
+        });
+        if (!mounted) return;
+        setProfile(savedProfile);
+        setApplications(readApplicationsFromStorage(user.id));
+      } catch (e) {
+        console.error("Telegram profile init error:", e);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [tgAvailable]);
+
+  useEffect(() => {
+    if (!profile?.telegram_id) return;
+    writeApplicationsToStorage(profile.telegram_id, applications);
+  }, [applications, profile?.telegram_id]);
+
+  const handleRequestContact = async () => {
+    if (!tgAvailable || !profile?.telegram_id) return;
+    setRequestingContact(true);
+    try {
+      await WebApp.requestContact?.();
+      const tgData = window.Telegram?.WebApp?.initDataUnsafe || {};
+      const phoneFromTelegram =
+        tgData?.user?.phone_number ||
+        tgData?.user?.phone ||
+        tgData?.receiver?.phone_number ||
+        null;
+
+      if (phoneFromTelegram) {
+        const updated = await upsertProfile({
+          telegram_id: profile.telegram_id,
+          first_name: profile.first_name || null,
+          last_name: profile.last_name || null,
+          username: profile.username || null,
+          phone: phoneFromTelegram,
+        });
+        setProfile(updated);
+      } else {
+        alert("Контакт отправлен. Если номер не подтянулся автоматически, повторите запрос позже.");
+      }
+    } catch (e) {
+      alert("Не удалось получить контакт: " + e.message);
+    }
+    setRequestingContact(false);
+  };
 
   const pendingCount = applications.filter(a => a.status === "pending").length;
   const filteredUnis = unis.filter((u) =>
@@ -745,8 +934,12 @@ export default function App() {
       {screen.type === "applyForm" && (
         <ApplyFormScreen faculty={screen.faculty} uni={screen.uni} specs={screen.specs}
           onBack={getBack()}
+          telegramId={profile?.telegram_id}
+          initialPhone={profile?.phone}
+          initialFirstName={profile?.first_name}
+          initialLastName={profile?.last_name}
           onSubmit={appData => {
-            const newApp = { ...appData, status: "pending" };
+            const newApp = { ...appData };
             setApplications(prev => [newApp, ...prev]);
             setNotification(newApp);
             setTab("apps");
@@ -754,7 +947,15 @@ export default function App() {
           }} />
       )}
       {screen.type === "applications" && <ApplicationsScreen applications={applications} />}
-      {screen.type === "profile" && <ProfileScreen />}
+      {screen.type === "profile" && (
+        <ProfileScreen
+          profile={profile}
+          applications={applications}
+          onRequestContact={handleRequestContact}
+          requestingContact={requestingContact}
+          tgAvailable={tgAvailable}
+        />
+      )}
 
       <TabBar
         active={tab}
