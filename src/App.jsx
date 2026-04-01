@@ -3,7 +3,7 @@ import { sbFetch } from "./supabase.js";
 import UniversityList from "./components/UniversityList.jsx";
 import Favorites from "./components/Favorites.jsx";
 import TabBar from "./components/TabBar.jsx";
-import PhoneAuth from "./components/PhoneAuth.jsx";
+import Profile from "./components/Profile.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
 import { useTelegramUser } from "./hooks/useTelegramUser.js";
 
@@ -679,36 +679,6 @@ function TelegramNotif({ app, onClose }) {
   );
 }
 
-function ProfileScreen({ profile, applications, onRequestContact, requestingContact, tgAvailable }) {
-  const fullName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || "Пользователь Telegram";
-  return (
-    <div style={{ paddingBottom: 80 }}>
-      <div style={{ padding: "20px 16px" }}>
-        <div style={{
-          width: 80, height: 80, borderRadius: "50%", background: C.bluePale,
-          margin: "20px auto 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 34,
-        }}>👤</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.t1, textAlign: "center" }}>{fullName}</div>
-        <div style={{ fontSize: 13, color: C.t3, marginTop: 6, textAlign: "center" }}>
-          {profile?.username ? `@${profile.username}` : "Username не указан"}
-        </div>
-        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginTop: 16 }}>
-          <div style={{ fontSize: 13, color: C.t2 }}>Telegram ID: <strong>{profile?.telegram_id || "—"}</strong></div>
-          <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Телефон: <strong>{profile?.phone || "Не указан"}</strong></div>
-          <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Мои заявки: <strong>{applications.length}</strong></div>
-        </div>
-        <PhoneAuth
-          tgAvailable={tgAvailable}
-          requestingContact={requestingContact}
-          onRequestContact={onRequestContact}
-          colors={C}
-          phone={profile?.phone}
-        />
-      </div>
-    </div>
-  );
-}
-
 // ─── Main App ───
 
 export default function App() {
@@ -720,7 +690,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingUnis, setLoadingUnis] = useState(true);
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
-  const { profile, tgAvailable, requestingContact, requestContact } = useTelegramUser();
+  const { profile } = useTelegramUser();
 
   useEffect(() => {
     (async () => {
@@ -743,17 +713,6 @@ export default function App() {
     if (!profile?.telegram_id) return;
     writeApplicationsToStorage(profile.telegram_id, applications);
   }, [applications, profile?.telegram_id]);
-
-  const handleRequestContact = async () => {
-    try {
-      const updated = await requestContact();
-      if (!updated?.phone) {
-        alert("Контакт отправлен. Если номер не подтянулся автоматически, повторите запрос позже.");
-      }
-    } catch (e) {
-      alert("Не удалось получить контакт: " + e.message);
-    }
-  };
 
   const pendingCount = applications.filter(a => a.status === "pending").length;
   const filteredUnis = unis.filter((u) =>
@@ -870,13 +829,7 @@ export default function App() {
       )}
       {screen.type === "applications" && <ApplicationsScreen applications={applications} />}
       {screen.type === "profile" && (
-        <ProfileScreen
-          profile={profile}
-          applications={applications}
-          onRequestContact={handleRequestContact}
-          requestingContact={requestingContact}
-          tgAvailable={tgAvailable}
-        />
+        <Profile applicationsCount={applications.length} colors={C} />
       )}
 
       <TabBar

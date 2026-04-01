@@ -28,13 +28,17 @@ export function useTelegramUser() {
   const [profile, setProfile] = useState(null);
   const [tgUser, setTgUser] = useState(null);
   const [requestingContact, setRequestingContact] = useState(false);
+  const [loading, setLoading] = useState(true);
   const tgAvailable = typeof window !== "undefined" && !!window.Telegram?.WebApp;
 
   useEffect(() => {
     let mounted = true;
 
     (async () => {
-      if (!tgAvailable) return;
+      if (!tgAvailable) {
+        setLoading(false);
+        return;
+      }
       try {
         WebApp.ready();
         WebApp.expand();
@@ -57,6 +61,8 @@ export function useTelegramUser() {
         setProfile(savedProfile);
       } catch (e) {
         console.error("Telegram user init error:", e);
+      } finally {
+        if (mounted) setLoading(false);
       }
     })();
 
@@ -97,6 +103,7 @@ export function useTelegramUser() {
     profile,
     tgUser,
     tgAvailable,
+    loading,
     requestingContact,
     requestContact,
     setProfile,
