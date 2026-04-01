@@ -1,119 +1,129 @@
 """
-UnikTap Telegram Bot
-Точка входа для пользователей — показывает приветствие,
-ссылку на канал и кнопку для открытия Web App.
-
-Запуск: python uniktap_bot.py
+UnikTap Telegram Bot - Webhook версия для Vercel
 """
 
-import asyncio
-import logging
+import json
 import os
-
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    WebAppInfo,
-)
-from aiogram.filters import CommandStart
+import urllib.request
+import urllib.parse
 
 # ─── Конфигурация ───────────────────────────────────────
-# Токен бота от @BotFather
-# ВАЖНО: замени на свой токен!
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8615692112:AAG8Uf5UWhYL74AuH2IHCWh0JIp28ug-3Kg")
-
-# Ссылка на ваш Telegram-канал
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_URL = "https://t.me/Uniktap"
-
-# URL вашего Web App (React-приложение)
-# После деплоя на Vercel/Netlify замени на свой URL
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://uniktap.vercel.app/")
 
-# ─── Логирование ────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-log = logging.getLogger("uniktap")
-
-# ─── Роутер ─────────────────────────────────────────────
-router = Router()
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
-@router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    """
-    Обработчик команды /start
-    Показывает приветствие + кнопку на канал + кнопку "Далее"
-    """
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Наш Telegram-канал", url=CHANNEL_URL)],
-            [InlineKeyboardButton(text="Далее ➡️", callback_data="open_app")],
+def send_message(chat_id: int, text: str, reply_markup: dict = None) -> None:
+    """Отправка сообщения через Telegram API"""
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+    req = urllib.request.Request(f"{TELEGRAM_API}/sendMessage", data=data)
+    urllib.request.urlopen(req)
+
+
+def answer_callback(callback_id: str) -> None:
+    """Ответ на callback query"""
+    data = urllib.parse.urlencode({"callback_query_id": callback_id}).encode("utf-8")
+    req = urllib.request.Request(f"{TELEGRAM_API}/answerCallbackQuery", data=data)
+    urllib.request.urlopen(req)
+
+
+def handle_start(chat_id: int) -> None:
+    """Обработчик команды /start"""
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "Наш Telegram-канал", "url": CHANNEL_URL}],
+            [{"text": "Далее", "callback_data": "open_app"}],
         ]
-    )
+    }
 
-    await message.answer(
-        "👋 <b>Добро пожаловать в UnikTap!</b>\n\n"
-        "🎓 Все университеты Шымкента — в одном месте.\n"
+    send_message(
+        chat_id,
+        "<b>Добро пожаловать в UnikTap!</b>\n\n"
+        "Все университеты Шымкента — в одном месте.\n"
         "Цены, гранты, специальности, баллы ЕНТ — всё здесь.\n\n"
-        "📢 Подпишись на наш канал, а потом нажми <b>Далее</b> 👇",
-        parse_mode="HTML",
-        reply_markup=keyboard,
+        "Подпишись на наш канал, а потом нажми <b>Далее</b>",
+        keyboard,
     )
 
 
-@router.callback_query(F.data == "open_app")
-async def show_webapp(callback: CallbackQuery) -> None:
-    """
-    Обработчик нажатия кнопки "Далее"
-    Показывает кнопку для открытия Web App внутри Telegram
-    """
-    await callback.answer()
+def handle_open_app(chat_id: int, callback_id: str) -> None:
+    """Обработчик нажатия кнопки 'Далее'"""
+    answer_callback(callback_id)
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
+    keyboard = {
+        "inline_keyboard": [
             [
-                InlineKeyboardButton(
-                    text="🎓 Открыть UnikTap",
-                    web_app=WebAppInfo(url=WEBAPP_URL),
-                )
+                {
+                    "text": "Открыть UnikTap",
+                    "web_app": {"url": WEBAPP_URL},
+                }
             ]
         ]
+    }
+
+    send_message(
+        chat_id,
+        "Нажми кнопку ниже, чтобы открыть <b>UnikTap</b>",
+        keyboard,
     )
 
-    await callback.message.answer(
-        "🚀 Нажми кнопку ниже, чтобы открыть <b>UnikTap</b> 👇",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
+
+# ─── Vercel Handler ─────────────────────────────────────
+
+from http.server import BaseHTTPRequestHandler
 
 
-# ─── Запуск бота ────────────────────────────────────────
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        """Обработка входящих webhook-запросов от Telegram"""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            update = json.loads(body.decode("utf-8"))
 
-async def main() -> None:
-    """Инициализация и запуск polling"""
+            # Обработка сообщений
+            if "message" in update:
+                message = update["message"]
+                chat_id = message["chat"]["id"]
+                text = message.get("text", "")
 
-    if BOT_TOKEN == "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН":
-        log.error("❌ Токен не указан! Открой uniktap_bot.py и замени BOT_TOKEN")
-        return
+                if text.startswith("/start"):
+                    handle_start(chat_id)
 
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
-    dp.include_router(router)
+            # Обработка callback (нажатие на кнопки)
+            elif "callback_query" in update:
+                callback = update["callback_query"]
+                chat_id = callback["message"]["chat"]["id"]
+                callback_id = callback["id"]
+                data = callback.get("data", "")
 
-    log.info("🚀 UnikTap бот запущен!")
-    log.info(f"   Web App URL: {WEBAPP_URL}")
-    log.info(f"   Канал: {CHANNEL_URL}")
+                if data == "open_app":
+                    handle_open_app(chat_id, callback_id)
 
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
 
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(str(e).encode())
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    def do_GET(self):
+        """Проверка что endpoint работает"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"UnikTap Bot Webhook is running!")
