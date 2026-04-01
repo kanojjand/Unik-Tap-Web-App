@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import WebApp from "@twa-dev/sdk";
 import { sbFetch } from "./supabase.js";
 import UniversityList from "./components/UniversityList.jsx";
 import Favorites from "./components/Favorites.jsx";
 import TabBar from "./components/TabBar.jsx";
+import PhoneAuth from "./components/PhoneAuth.jsx";
 import { useFavorites } from "./hooks/useFavorites.js";
+import { useTelegramUser } from "./hooks/useTelegramUser.js";
 
 /* ═══════════════════════════════════════
    UnikTap — User-facing App
@@ -696,29 +697,13 @@ function ProfileScreen({ profile, applications, onRequestContact, requestingCont
           <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Телефон: <strong>{profile?.phone || "Не указан"}</strong></div>
           <div style={{ fontSize: 13, color: C.t2, marginTop: 6 }}>Мои заявки: <strong>{applications.length}</strong></div>
         </div>
-        <button
-          onClick={onRequestContact}
-          disabled={requestingContact || !tgAvailable}
-          style={{
-            width: "100%",
-            marginTop: 14,
-            padding: "12px 14px",
-            border: "none",
-            borderRadius: 12,
-            cursor: requestingContact || !tgAvailable ? "not-allowed" : "pointer",
-            background: requestingContact || !tgAvailable ? C.border : `linear-gradient(135deg, ${C.blue}, ${C.accent})`,
-            color: requestingContact || !tgAvailable ? C.t3 : C.white,
-            fontWeight: 700,
-            fontSize: 13,
-          }}
-        >
-          {requestingContact ? "Запрашиваем номер..." : "📱 Поделиться номером"}
-        </button>
-        {!tgAvailable && (
-          <div style={{ marginTop: 8, fontSize: 12, color: C.t3, textAlign: "center" }}>
-            Кнопка доступна только внутри Telegram Web App
-          </div>
-        )}
+        <PhoneAuth
+          tgAvailable={tgAvailable}
+          requestingContact={requestingContact}
+          onRequestContact={onRequestContact}
+          colors={C}
+          phone={profile?.phone}
+        />
       </div>
     </div>
   );
@@ -734,32 +719,8 @@ export default function App() {
   const [unis, setUnis] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loadingUnis, setLoadingUnis] = useState(true);
-  const [profile, setProfile] = useState(null);
-  const [requestingContact, setRequestingContact] = useState(false);
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
-  const tgAvailable = typeof window !== "undefined" && !!window.Telegram?.WebApp;
-
-  const upsertProfile = async (payload) => {
-    const existing = await sbFetch(`profiles?telegram_id=eq.${payload.telegram_id}&select=*`);
-    if (existing?.length > 0) {
-      await sbFetch(`profiles?telegram_id=eq.${payload.telegram_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          ...payload,
-          updated_at: new Date().toISOString(),
-        }),
-        prefer: "return=minimal",
-      });
-      return { ...existing[0], ...payload };
-    }
-
-    const created = await sbFetch("profiles", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      prefer: "return=representation",
-    });
-    return Array.isArray(created) ? created[0] : payload;
-  };
+  const { profile, tgAvailable, requestingContact, requestContact } = useTelegramUser();
 
   useEffect(() => {
     (async () => {
@@ -774,29 +735,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!tgAvailable) return;
-      try {
-        WebApp.ready();
-        WebApp.expand();
-        const user = WebApp.initDataUnsafe?.user;
-        if (!user?.id) return;
-        const savedProfile = await upsertProfile({
-          telegram_id: user.id,
-          first_name: user.first_name || null,
-          last_name: user.last_name || null,
-          username: user.username || null,
-        });
-        if (!mounted) return;
-        setProfile(savedProfile);
-        setApplications(readApplicationsFromStorage(user.id));
-      } catch (e) {
-        console.error("Telegram profile init error:", e);
-      }
-    })();
-    return () => { mounted = false; };
-  }, [tgAvailable]);
+    if (!profile?.telegram_id) return;
+    setApplications(readApplicationsFromStorage(profile.telegram_id));
+  }, [profile?.telegram_id]);
 
   useEffect(() => {
     if (!profile?.telegram_id) return;
@@ -804,33 +745,14 @@ export default function App() {
   }, [applications, profile?.telegram_id]);
 
   const handleRequestContact = async () => {
-    if (!tgAvailable || !profile?.telegram_id) return;
-    setRequestingContact(true);
     try {
-      await WebApp.requestContact?.();
-      const tgData = window.Telegram?.WebApp?.initDataUnsafe || {};
-      const phoneFromTelegram =
-        tgData?.user?.phone_number ||
-        tgData?.user?.phone ||
-        tgData?.receiver?.phone_number ||
-        null;
-
-      if (phoneFromTelegram) {
-        const updated = await upsertProfile({
-          telegram_id: profile.telegram_id,
-          first_name: profile.first_name || null,
-          last_name: profile.last_name || null,
-          username: profile.username || null,
-          phone: phoneFromTelegram,
-        });
-        setProfile(updated);
-      } else {
+      const updated = await requestContact();
+      if (!updated?.phone) {
         alert("Контакт отправлен. Если номер не подтянулся автоматически, повторите запрос позже.");
       }
     } catch (e) {
       alert("Не удалось получить контакт: " + e.message);
     }
-    setRequestingContact(false);
   };
 
   const pendingCount = applications.filter(a => a.status === "pending").length;
